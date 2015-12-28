@@ -52,6 +52,9 @@ include_directories(src/)
 add_library(${OGRE_FFMPEG_VIDEOPLAYER_LIBRARY} STATIC ${OGRE_FFMPEG_VIDEOPLAYER_SOURCE_FILES})
 target_link_libraries(${OGRE_FFMPEG_VIDEOPLAYER_LIBRARY} ${VIDEO_FFMPEG_LIBRARIES} ${Boost_LIBRARIES} ${OGRE_LIBRARIES})
 
+install(TARGETS ${OGRE_FFMPEG_VIDEOPLAYER_LIBRARY} DESTINATION lib)
+install(FILES src/videoplayer.hpp DESTINATION include/ogre-ffmpeg)
+
 if(BUILD_VIDEOPLAYER_DEMO)
     add_subdirectory(demo)
 endif()
