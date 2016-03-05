@@ -54,6 +54,7 @@ target_link_libraries(${OGRE_FFMPEG_VIDEOPLAYER_LIBRARY} ${VIDEO_FFMPEG_LIBRARIE
 
 install(TARGETS ${OGRE_FFMPEG_VIDEOPLAYER_LIBRARY} DESTINATION lib)
 install(FILES src/videoplayer.hpp DESTINATION include/ogre-ffmpeg)
+install(FILES src/audiofactory.hpp DESTINATION include/ogre-ffmpeg)
 
 if(BUILD_VIDEOPLAYER_DEMO)
     add_subdirectory(demo)
