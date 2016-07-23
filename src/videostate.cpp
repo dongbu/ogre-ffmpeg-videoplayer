@@ -476,8 +476,12 @@ void VideoState::video_thread_loop(VideoState *self)
             pts = *(int64_t*)pFrame->opaque;
         pts *= av_q2d((*self->video_st)->time_base);
 
-        
+
+    #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
         av_free_packet(packet);
+    #else
+        av_packet_unref(packet);
+    #endif
 
         // Did we get a video frame?
         if(frameFinished)
@@ -493,7 +497,11 @@ void VideoState::video_thread_loop(VideoState *self)
 #endif
     av_free(pFrame);
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
     avpicture_free((AVPicture*)self->rgbaFrame);
+#else
+    av_freep(&self->rgbaFrame->data[0]);
+#endif
 
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(55, 0, 0)
     our_on_buffer_free(self->rgbaFrame);
@@ -594,8 +602,14 @@ void VideoState::decode_thread_loop(VideoState *self)
                 self->videoq.put(packet);
             else if(self->audio_st && packet->stream_index == self->audio_st-pFormatCtx->streams)
                 self->audioq.put(packet);
-            else
+            else {
+
+            #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
                 av_free_packet(packet);
+            #else
+                av_packet_unref(packet);
+            #endif
+            }
         }
     }
     catch(std::runtime_error& e) {
