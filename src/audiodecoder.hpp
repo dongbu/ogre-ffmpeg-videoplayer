@@ -57,11 +57,17 @@ private:
                 throw std::bad_alloc();
         }
         ~AutoAVPacket()
-        { av_free_packet(this); }
+        {
+        #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
+            av_free_packet(this);
+        #else
+            av_packet_unref(this);
+        #endif
+        }
     };
 
 
-    std::auto_ptr<AudioResampler> mAudioResampler;
+    std::shared_ptr<AudioResampler> mAudioResampler;
 
     uint8_t *mDataBuf;
     uint8_t **mFrameData;

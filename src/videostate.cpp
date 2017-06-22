@@ -27,6 +27,10 @@ extern "C"
 
     #include <libavutil/mathematics.h>
 
+    #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(55, 0, 0)
+         #include <libavutil/imgutils.h>
+    #endif
+    
     #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(55,28,1)
     #define av_frame_alloc  avcodec_alloc_frame
     #endif
@@ -92,9 +96,12 @@ void PacketQueue::put(AVPacket *pkt)
     AVPacketList *pkt1;
     pkt1 = (AVPacketList*)av_malloc(sizeof(AVPacketList));
     if(!pkt1) throw std::bad_alloc();
-    pkt1->pkt = *pkt;
     pkt1->next = NULL;
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
+
+    pkt1->pkt = *pkt;
+    
     if(pkt->data != flush_pkt.data && pkt1->pkt.destruct == NULL)
     {
         if(av_dup_packet(&pkt1->pkt) < 0)
@@ -104,6 +111,17 @@ void PacketQueue::put(AVPacket *pkt)
         }
         av_free_packet(pkt);
     }
+#else
+    if(pkt->data != flush_pkt.data)
+    {
+        if(av_packet_ref(&pkt1->pkt, pkt) < 0)
+        {
+            av_free(pkt1);
+            throw std::runtime_error("Failed to duplicate packet");
+        }
+        av_packet_unref(pkt);
+    }
+#endif
 
     this->mutex.lock ();
 
@@ -161,8 +179,14 @@ void PacketQueue::clear()
     for(pkt = this->first_pkt; pkt != NULL; pkt = pkt1)
     {
         pkt1 = pkt->next;
+    #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
         if (pkt->pkt.data != flush_pkt.data)
             av_free_packet(&pkt->pkt);
+    #else
+        if (pkt->pkt.data != flush_pkt.data)
+            av_packet_unref(&pkt->pkt);
+    #endif
+        
         av_freep(&pkt);
     }
     this->last_pkt = NULL;
@@ -313,9 +337,15 @@ int VideoState::queue_picture(AVFrame *pFrame, double pts)
     {
         int w = (*this->video_st)->codec->width;
         int h = (*this->video_st)->codec->height;
+    #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
         this->sws_context = sws_getContext(w, h, (*this->video_st)->codec->pix_fmt,
                                            w, h, PIX_FMT_RGBA, SWS_BICUBIC,
                                            NULL, NULL, NULL);
+    #else
+        this->sws_context = sws_getContext(w, h, (*this->video_st)->codec->pix_fmt,
+            w, h, AV_PIX_FMT_RGBA, SWS_BICUBIC,
+            NULL, NULL, NULL);
+    #endif
         if(this->sws_context == NULL)
             throw std::runtime_error("Cannot initialize the conversion context!\n");
     }
@@ -361,6 +391,9 @@ double VideoState::synchronize_video(AVFrame *src_frame, double pts)
  * a frame at the time it is allocated.
  */
 static int64_t global_video_pkt_pts = AV_NOPTS_VALUE;
+
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
+
 static int our_get_buffer(struct AVCodecContext *c, AVFrame *pic)
 {
     int ret = avcodec_default_get_buffer(c, pic);
@@ -375,6 +408,26 @@ static void our_release_buffer(struct AVCodecContext *c, AVFrame *pic)
     avcodec_default_release_buffer(c, pic);
 }
 
+#else
+
+static int our_get_buffer2(struct AVCodecContext *c, AVFrame *pic, int flags)
+{
+    int ret = avcodec_default_get_buffer2(c, pic, flags);
+    // TODO: make absolutely sure that this cannot leak
+    int64_t *pts = (int64_t*)av_malloc(sizeof(int64_t));
+    *pts = global_video_pkt_pts;
+    pic->opaque = pts;
+    return ret;
+}
+
+static void our_on_buffer_free(AVFrame *pic)
+{
+    if(pic)
+        av_freep(&pic->opaque);
+}
+
+#endif
+
 
 void VideoState::video_thread_loop(VideoState *self)
 {
@@ -385,7 +438,13 @@ void VideoState::video_thread_loop(VideoState *self)
     pFrame = av_frame_alloc();
 
     self->rgbaFrame = av_frame_alloc();
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
     avpicture_alloc((AVPicture*)self->rgbaFrame, PIX_FMT_RGBA, (*self->video_st)->codec->width, (*self->video_st)->codec->height);
+#else
+    av_image_alloc(self->rgbaFrame->data, self->rgbaFrame->linesize,
+        (*self->video_st)->codec->width, (*self->video_st)->codec->height , AV_PIX_FMT_RGBA, 1);
+
+#endif
 
     while(self->videoq.get(packet, self) >= 0)
     {
@@ -417,7 +476,12 @@ void VideoState::video_thread_loop(VideoState *self)
             pts = *(int64_t*)pFrame->opaque;
         pts *= av_q2d((*self->video_st)->time_base);
 
+
+    #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
         av_free_packet(packet);
+    #else
+        av_packet_unref(packet);
+    #endif
 
         // Did we get a video frame?
         if(frameFinished)
@@ -428,9 +492,20 @@ void VideoState::video_thread_loop(VideoState *self)
         }
     }
 
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(55, 0, 0)
+    our_on_buffer_free(pFrame);
+#endif
     av_free(pFrame);
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
     avpicture_free((AVPicture*)self->rgbaFrame);
+#else
+    av_freep(&self->rgbaFrame->data[0]);
+#endif
+
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(55, 0, 0)
+    our_on_buffer_free(self->rgbaFrame);
+#endif
     av_free(self->rgbaFrame);
 }
 
@@ -527,8 +602,14 @@ void VideoState::decode_thread_loop(VideoState *self)
                 self->videoq.put(packet);
             else if(self->audio_st && packet->stream_index == self->audio_st-pFormatCtx->streams)
                 self->audioq.put(packet);
-            else
+            else {
+
+            #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
                 av_free_packet(packet);
+            #else
+                av_packet_unref(packet);
+            #endif
+            }
         }
     }
     catch(std::runtime_error& e) {
@@ -593,8 +674,12 @@ int VideoState::stream_open(int stream_index, AVFormatContext *pFormatCtx)
     case AVMEDIA_TYPE_VIDEO:
         this->video_st = pFormatCtx->streams + stream_index;
 
+    #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(55, 0, 0)
         codecCtx->get_buffer = our_get_buffer;
         codecCtx->release_buffer = our_release_buffer;
+    #else
+        codecCtx->get_buffer2 = our_get_buffer2;
+    #endif
         this->video_thread = boost::thread(video_thread_loop, this);
         break;
 
